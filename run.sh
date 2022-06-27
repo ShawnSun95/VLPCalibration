@@ -1,2 +1,2 @@
 make
-./build/calibration RSS.txt
+./build/calibration ./data/RSS.txt

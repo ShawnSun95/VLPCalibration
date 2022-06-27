@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
 	fstream infile;
 	fstream outfile;
 	infile.open(argv[1], ios::in);
-	outfile.open("parameter.txt", ios::out);
+	outfile.open("./output/parameter.txt", ios::out);
 	for(int i=0;i<obnum;i++)
 	{
 		for(int j=0;j<3;j++)
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
 	std::vector<double> Residuals;
 	problem.Evaluate(EvalOpts, NULL, &Residuals, NULL, NULL);
 	fstream outfile2;
-	outfile2.open("residuals.txt", ios::out);
+	outfile2.open("./output/residuals.txt", ios::out);
 	for(int i = 0;  i < Residuals.size(); i++)
 	{
 		d = sqrt(pow(LED[i%5*3] - x[i/5*3], 2) 
