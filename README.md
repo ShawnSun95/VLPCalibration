@@ -1,6 +1,6 @@
 # VLPCalibration
 
-Programs can calibrate VLP systems that use PD-based RSS.
+Programs can calibrate photodiode (PD)-based visible light positioning systems that use RSS measurements.
 
 One can use either the command `cmake .` or vs code to build these programs, and then use the command  `./run.sh` or vs code to run.
 
