@@ -7,7 +7,6 @@
 #include<cmath>
 
 using ceres::AutoDiffCostFunction;
-using ceres::NumericDiffCostFunction;
 using ceres::Covariance;
 using ceres::CostFunction;
 using ceres::Problem;
@@ -18,86 +17,154 @@ using ceres::Solve;
 using ceres::ResidualBlockId;
 using namespace std;
 using namespace Eigen;
+using namespace ceres;
 
-const int obnum = 71;
+class VLPCalibration : public SizedCostFunction<1,5,1,5> {
+	public:
+		VLPCalibration(double RSS, Vector3d p_pd, Vector3d p_led, double alpha, int index)
+			: RSS_(RSS), p_pd_(std::move(p_pd)), p_led_(std::move(p_led)), alpha_(alpha), index_(index) {}
 
-struct VLCResidual {
-	VLCResidual(double RSS, double d, int index)
-		: RSS_(RSS), d_(d), index_(index) {}
+		virtual ~VLPCalibration() {}
 
-	template <typename T> bool operator()(const T* const a,
-                                        const T* const b,
-                                        T* residual) const {
-		residual[0] = a[index_] * pow(RSS_, b[index_]) - d_;
-		residual[0] = residual[0] * RSS_;
-		return true;
-	}
+		virtual bool Evaluate(double const* const* parameters,
+                           double* residuals,
+                           double** jacobians) const {
+			const double *m = parameters[0];
+			const double *M = parameters[1];
+			const double *a = parameters[2];
 
+			Vector3d e_PD(0, sin(alpha_), cos(alpha_));
+			Vector3d e_LED(0, 0, 1);
+			Vector3d LOS = p_led_ - p_pd_;
+			double cos_theta = LOS.dot(e_LED) / LOS.norm();
+			double cos_phi = LOS.dot(e_PD) / LOS.norm();
+			double d2 = LOS.norm()*LOS.norm();
+			residuals[0] = a[index_]*(m[index_]+1)*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2 - RSS_;
+			
+			if (!jacobians) return true;
+			double* jacobian0 = jacobians[0];
+			if (!jacobian0) return true;
+			double* jacobian1 = jacobians[1];
+			if (!jacobian1) return true;
+			double* jacobian2 = jacobians[2];
+			if (!jacobian2) return true;
+
+			for (int i=0;i<5;i++){
+				jacobian0[i] = 0;
+				jacobian2[i] = 0;
+			}
+			
+			jacobian0[index_] = a[index_]*(m[index_]+1)*log(cos_theta)*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2
+				+a[index_]*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2;
+			jacobian1[0] = a[index_]*log(cos_phi)*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2;
+			jacobian2[index_] = pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2;
+
+			return true;
+		}
 	private:
-	const double RSS_;
-	const double d_;
-	const int index_;
+		const double RSS_;
+		const Vector3d p_pd_;
+		const Vector3d p_led_;
+		const double alpha_;
+		const int index_;
 };
+
+
+// struct VLPCalibration {
+// 	VLPCalibration(double RSS, Vector3d p_pd, Vector3d p_led, double alpha, int index)
+// 		: RSS_(RSS), p_pd_(std::move(p_pd)), p_led_(std::move(p_led)), alpha_(alpha), index_(index) {}
+
+// 	template <typename T> bool operator()(const T* const m,
+//                                         const T* const M,
+// 										const T* const a,
+//                                         T* residual) const {
+// 		Vector3d e_PD(0, sin(alpha_), cos(alpha_));
+// 		Vector3d e_LED(0, 0, 1);
+// 		Vector3d LOS = p_led_ - p_pd_;
+// 		T cos_theta = LOS.dot(e_LED) / LOS.norm();
+// 		T cos_phi = LOS.dot(e_PD) / LOS.norm();
+// 		residual[0] = a[index_]*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/LOS.norm()/LOS.norm() - RSS_;
+// 		return true;
+// 	}
+
+// 	private:
+// 	const double RSS_;
+// 	const Vector3d p_pd_;
+// 	const Vector3d p_led_;
+// 	const double alpha_;
+// 	const int index_;
+// };
 
 int main(int argc, char** argv) {
 	google::InitGoogleLogging(argv[0]);
 
-	if (argc < 2) {
+	if (argc < 5) {
 		std::cerr << "parameter missing!\n";
 		return 1;
 	}
-	double *x=new double[obnum*3];
-	double *RSS=new double[obnum*5];
-	//double *variation=new double[obnum*5];
-	//double *std=new double[obnum*5];
+
+	int n_angle, n_pos, n_led;
+	n_angle = atoi(argv[2]);
+	n_pos   = atoi(argv[3]);
+	n_led   = atoi(argv[4]);
+	double *x     = new double[n_angle*n_pos*3];
+	double *RSS   = new double[n_angle*n_pos*n_led];
+	double *LED   = new double[n_led*3];
+	double *alpha = new double[n_angle];
+	double *m     = new double[n_led];
+	double *a     = new double[n_led];
+	double M, PD_Height;
 
 	fstream infile;
 	fstream outfile;
 	infile.open(argv[1], ios::in);
-	outfile.open("./output/parameter.txt", ios::out);
-	for(int i=0;i<obnum;i++)
-	{
-		for(int j=0;j<3;j++)
-			infile >> x[i*3+j];
-		for(int j=0;j<5;j++)
-			infile >> RSS[i*5+j];
-		//for(int j=0;j<5;j++)
-		//	infile >> variation[i*5+j];
-		//for(int j=0;j<5;j++)
-		//	infile >> std[i*5+j];
+	outfile.open("./output/parameter_lamber.txt", ios::out);
+	for(int i=0;i<n_angle;i++){
+		for(int j=0;j<n_pos;j++){
+			for(int k=0;k<3;k++)
+				infile >> x[i*n_pos*3+j*3+k];
+			for(int k=0;k<n_led;k++)
+				infile >> RSS[i*n_pos*n_led+j*n_led+k];
+		}
 	}
+	for(int k=0;k<n_led;k++){
+		infile >> LED[k*3] >> LED[k*3+1] >> LED[k*3+2];
+	}
+	for(int i=0;i<n_angle;i++)
+		infile >> alpha[i];
+	infile >> PD_Height >> m[0] >> M;
+	for(int k=0;k<n_led;k++){
+		infile >> a[k];
+		m[k] = m[0];
+	}
+
 	infile.close();
+	vector<Vector3i> inds;
 
-	double a[5] = {8.4981,7.2491,7.0180,7.4279,7.4600};
-	double b[5] = {-0.3200,-0.2842,-0.2784,-0.2927,-0.3082};
-
-	//double a[5] = {2,2,2,1,1};
-	//double b[5] = {-0.3,-0.3,-0.2,-0.3,-0.3};
-	double LED[15]={0.26,0.66,2.6,
-	    4.61,0.67,2.6,
-	    4.57,4.25,2.6,
-	    0.18,4.25,2.6,
-	    2.45,2.49,2.6};
-	double d;
 	Problem problem;
-	int runtime_number_of_residuals = 3;
-	for (int i = 0; i < 5*obnum; ++i) {
-		d = sqrt(pow(LED[i%5*3] - x[i/5*3], 2) 
-			+ pow(LED[i%5*3+1] - x[i/5*3+1], 2) 
-			+ pow(LED[i%5*3+2] - x[i/5*3+2], 2));
-		std::cout << d << '\t'<<RSS[i] << "\n";
-		problem.AddResidualBlock(
-		new NumericDiffCostFunction<VLCResidual, ceres::CENTRAL, ceres::DYNAMIC, 5, 5>(
-		new VLCResidual(RSS[i], d, i%5),ceres::TAKE_OWNERSHIP,1),
-		NULL,
-		a,b);
+	for (int i = 0; i < n_angle; ++i) {
+		for (int j = 0; j < n_pos; j++){
+			for (int k = 0; k < n_led; k++){
+				Vector3d p_LED(LED[k*3], LED[k*3+1], LED[k*3+2]);
+				Vector3d p_PD(x[i*n_pos*3+j*3], x[i*n_pos*3+j*3+1], x[i*n_pos*3+j*3+2]);
+				Vector3d e_PD(0, sin(alpha[i]), cos(alpha[i]));
+				Vector3d e_LED(0, 0, 1);
+				Vector3d LOS = p_LED - p_PD;
+				double cos_theta = LOS.dot(e_LED) / LOS.norm();
+				double cos_phi = LOS.dot(e_PD) / LOS.norm();
+				if (cos_theta < 0.5 || cos_phi < 0.5) continue;
+				
+				CostFunction* cost_function =new VLPCalibration(RSS[i*n_pos*n_led+j*n_led+k], p_PD, p_LED, alpha[i], k);
+				problem.AddResidualBlock(cost_function,	nullptr, m, &M, a);
+
+				inds.push_back(Vector3i(i,j,k));
+			}
+		}
 	}
 
 	Solver::Options options;
-	//options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-	//options.dogleg_type = ceres::SUBSPACE_DOGLEG;
 	options.max_num_iterations = 100;
-	options.linear_solver_type = ceres::DENSE_QR;
+	// options.linear_solver_type = ceres::DENSE_QR;
 	options.minimizer_progress_to_stdout = true;
 
 	Solver::Summary summary;
@@ -114,17 +181,18 @@ int main(int argc, char** argv) {
 	std::vector<double> Residuals;
 	problem.Evaluate(EvalOpts, NULL, &Residuals, NULL, NULL);
 	fstream outfile2;
-	outfile2.open("./output/residuals.txt", ios::out);
+	outfile2.open("./output/residuals_lamber.txt", ios::out);
 	for(int i = 0;  i < Residuals.size(); i++)
 	{
-		d = sqrt(pow(LED[i%5*3] - x[i/5*3], 2) 
-			+ pow(LED[i%5*3+1] - x[i/5*3+1], 2));
-		outfile2 << d << '\t' << Residuals.at(i)/RSS[i] << endl;
+		Vector3i ind=inds[i];
+		outfile2 << ind(0)+1 << '\t' << ind(1)+1 << '\t' << ind(2)+1 << '\t' <<
+			RSS[ind(0)*n_pos*n_led+ind(1)*n_led+ind(2)] << '\t' << Residuals.at(i) << 
+			'\t' << Residuals.at(i)/RSS[ind(0)*n_pos*n_led+ind(1)*n_led+ind(2)] << endl;
 	}
 
 	std::cout << summary.FullReport() << "\n";
 	for (int i = 0; i < 5; ++i) {
-		outfile << a[i] << '\t' << b[i]  << endl;
+		outfile << m[i] << '\t' << M << '\t' << a[i]  << endl;
 	}
 	std::cout << "time counts:"<< summary.jacobian_evaluation_time_in_seconds << endl;
 	outfile.close();
