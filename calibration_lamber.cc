@@ -1,20 +1,11 @@
 // This is a program that calibrate the Lambertian parameters a, m and M.
-// by Xiao Sun
+// by Xiao Sun, 30 Jun, 2022
 
 #include<fstream>
 #include "ceres/ceres.h"
 #include "glog/logging.h"
 #include<cmath>
 
-using ceres::AutoDiffCostFunction;
-using ceres::Covariance;
-using ceres::CostFunction;
-using ceres::Problem;
-using ceres::CauchyLoss;
-using ceres::HuberLoss;
-using ceres::Solver;
-using ceres::Solve;
-using ceres::ResidualBlockId;
 using namespace std;
 using namespace Eigen;
 using namespace ceres;
@@ -33,7 +24,7 @@ class VLPCalibration : public SizedCostFunction<1,5,1,5> {
 			const double *M = parameters[1];
 			const double *a = parameters[2];
 
-			Vector3d e_PD(0, sin(alpha_), cos(alpha_));
+			Vector3d e_PD(0, sin(alpha_), cos(alpha_)); // unit vector
 			Vector3d e_LED(0, 0, 1);
 			Vector3d LOS = p_led_ - p_pd_;
 			double cos_theta = LOS.dot(e_LED) / LOS.norm();
@@ -49,11 +40,13 @@ class VLPCalibration : public SizedCostFunction<1,5,1,5> {
 			double* jacobian2 = jacobians[2];
 			if (!jacobian2) return true;
 
+			/* set zero */
 			for (int i=0;i<5;i++){
 				jacobian0[i] = 0;
 				jacobian2[i] = 0;
 			}
 			
+			/* derivatives */
 			jacobian0[index_] = a[index_]*(m[index_]+1)*log(cos_theta)*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2
 				+a[index_]*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2;
 			jacobian1[0] = a[index_]*log(cos_phi)*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/d2;
@@ -68,32 +61,6 @@ class VLPCalibration : public SizedCostFunction<1,5,1,5> {
 		const double alpha_;
 		const int index_;
 };
-
-
-// struct VLPCalibration {
-// 	VLPCalibration(double RSS, Vector3d p_pd, Vector3d p_led, double alpha, int index)
-// 		: RSS_(RSS), p_pd_(std::move(p_pd)), p_led_(std::move(p_led)), alpha_(alpha), index_(index) {}
-
-// 	template <typename T> bool operator()(const T* const m,
-//                                         const T* const M,
-// 										const T* const a,
-//                                         T* residual) const {
-// 		Vector3d e_PD(0, sin(alpha_), cos(alpha_));
-// 		Vector3d e_LED(0, 0, 1);
-// 		Vector3d LOS = p_led_ - p_pd_;
-// 		T cos_theta = LOS.dot(e_LED) / LOS.norm();
-// 		T cos_phi = LOS.dot(e_PD) / LOS.norm();
-// 		residual[0] = a[index_]*pow(cos_theta, m[index_])*pow(cos_phi, M[0])/LOS.norm()/LOS.norm() - RSS_;
-// 		return true;
-// 	}
-
-// 	private:
-// 	const double RSS_;
-// 	const Vector3d p_pd_;
-// 	const Vector3d p_led_;
-// 	const double alpha_;
-// 	const int index_;
-// };
 
 int main(int argc, char** argv) {
 	google::InitGoogleLogging(argv[0]);
@@ -116,9 +83,12 @@ int main(int argc, char** argv) {
 	double M, PD_Height;
 
 	fstream infile;
-	fstream outfile;
+	fstream outfile, outfile2;
 	infile.open(argv[1], ios::in);
 	outfile.open("./output/parameter_lamber.txt", ios::out);
+	outfile2.open("./output/residuals_lamber.txt", ios::out);
+
+	/* read calibration data */
 	for(int i=0;i<n_angle;i++){
 		for(int j=0;j<n_pos;j++){
 			for(int k=0;k<3;k++)
@@ -139,7 +109,7 @@ int main(int argc, char** argv) {
 	}
 
 	infile.close();
-	vector<Vector3i> inds;
+	vector<Vector3i> inds; // save the index where observations are within FOV
 
 	Problem problem;
 	for (int i = 0; i < n_angle; ++i) {
@@ -152,7 +122,7 @@ int main(int argc, char** argv) {
 				Vector3d LOS = p_LED - p_PD;
 				double cos_theta = LOS.dot(e_LED) / LOS.norm();
 				double cos_phi = LOS.dot(e_PD) / LOS.norm();
-				if (cos_theta < 0.5 || cos_phi < 0.5) continue;
+				if (cos_theta < 0.5 || cos_phi < 0.5) continue; // FOV = 120 deg for both PD and LEDs
 				
 				CostFunction* cost_function =new VLPCalibration(RSS[i*n_pos*n_led+j*n_led+k], p_PD, p_LED, alpha[i], k);
 				problem.AddResidualBlock(cost_function,	nullptr, m, &M, a);
@@ -180,8 +150,7 @@ int main(int argc, char** argv) {
 
 	std::vector<double> Residuals;
 	problem.Evaluate(EvalOpts, NULL, &Residuals, NULL, NULL);
-	fstream outfile2;
-	outfile2.open("./output/residuals_lamber.txt", ios::out);
+
 	for(int i = 0;  i < Residuals.size(); i++)
 	{
 		Vector3i ind=inds[i];
@@ -196,5 +165,6 @@ int main(int argc, char** argv) {
 	}
 	std::cout << "time counts:"<< summary.jacobian_evaluation_time_in_seconds << endl;
 	outfile.close();
+	outfile2.close();
 	return 0;
 }
